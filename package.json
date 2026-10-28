@@ -1,0 +1,15 @@
+{
+  "name": "dsh-plugin-remote-improve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shareable local DSH plugins for remote Web usage",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs packages/*/test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "verify": "npm run check && npm test",
+    "setup": "node scripts/install.mjs",
+    "setup:apply": "node scripts/install.mjs --apply"
+  }
+}

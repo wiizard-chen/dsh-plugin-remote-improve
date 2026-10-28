@@ -1,0 +1,4 @@
+{
+  "title": "Copy File Path",
+  "description": "Adds an icon control to the file open in the right Sidebar preview; it copies that file's absolute local path."
+}

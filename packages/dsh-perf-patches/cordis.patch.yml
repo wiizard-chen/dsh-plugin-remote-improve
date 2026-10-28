@@ -1,0 +1,6 @@
+# A profile bundle loaded FIRST (see dsh.profile.bundles order in the profile
+# package.json): its one entry imports the patch module before @deepseek-ai/dsh-base
+# imports the gateway, which is what lets the module patch `ws` in time.
+- insert:
+    - id: dsh-perf-patches
+      name: '@local/dsh-perf-patches'

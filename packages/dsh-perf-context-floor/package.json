@@ -1,0 +1,10 @@
+{
+  "name": "@local/dsh-perf-context-floor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental context-floor companion for @local/dsh-perf-patches: attempts to complete recent turns in the opening window",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@local/dsh-perf-patches",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental DSH host-side load-speed hooks: WebSocket compression + approximate first-paint budget",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

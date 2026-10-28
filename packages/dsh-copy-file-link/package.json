@@ -1,0 +1,28 @@
+{
+  "name": "dsh-copy-file-link",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Copy the absolute path of the file open in the dsh Web Sidebar preview.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
