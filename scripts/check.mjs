@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageNames = ['dsh-copy-file-link', 'dsh-perf-patches', 'dsh-perf-context-floor'];
-const allowedRoots = new Set(['.gitignore', 'AGENTS.md', 'README.md', 'package.json', 'docs', 'packages', 'scripts', 'test']);
+const allowedRoots = new Set(['.gitignore', 'AGENTS.md', 'README.md', 'package.json', 'docs', 'packages', 'scripts', 'test', 'integrations']);
 const files = [];
 function walk(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {

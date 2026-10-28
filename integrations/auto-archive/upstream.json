@@ -1,0 +1,27 @@
+{
+  "name": "dsh-session-auto-archive",
+  "repository": "https://github.com/xiao-hans/dsh-session-auto-archive.git",
+  "commit": "29854414f538842387f5fbc74ee6c822da92d48b",
+  "upstreamVersion": "0.1.1",
+  "derivedVersion": "0.1.1-remote.1",
+  "author": "xiao-hans",
+  "license": "MIT",
+  "files": {
+    "package.json": "86374db1b84c326f53f21d003a9a13ea0f7def59f24500660bd8d5865efed5bb",
+    "lib/index.js": "e80a1dc25ec76047732e175d7f716bce1183dce9f1b8e34afb381249a00880de",
+    "lib/client.js": "5205459b442823d81f7483e59203c837f6f7200537f6a5c337adaa1367212999",
+    "cordis.patch.yml": "29390058fe02e64aa9dbecf6917c28d25d01f9b9c3ac887cb00b3fd462c0d320",
+    "LICENSE": "655f2a166b70882eabf29b026a29974fdc78da85f37862d99423f5bddbb04840",
+    "README.md": "54da37f1ccd81bc3d4573f4eec77767a799f3eeebbe55cc436f572e5012c4de7"
+  },
+  "previewDefaults": {
+    "enabled": true,
+    "idleDays": 14,
+    "dryRun": true,
+    "keepPinned": true,
+    "includeSubagents": false,
+    "intervalHours": 12,
+    "startupDelayMs": 60000,
+    "excludeCwdSubstrings": []
+  }
+}

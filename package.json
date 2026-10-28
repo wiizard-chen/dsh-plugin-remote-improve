@@ -10,6 +10,7 @@
     "check": "node scripts/check.mjs",
     "verify": "npm run check && npm test",
     "setup": "node scripts/install.mjs",
-    "setup:apply": "node scripts/install.mjs --apply"
+    "setup:apply": "node scripts/install.mjs --apply",
+    "setup:auto-archive": "node scripts/setup-auto-archive.mjs"
   }
 }

@@ -24,6 +24,7 @@ export const PACKAGES = Object.freeze([
   Object.freeze({ name: 'dsh-copy-file-link', directory: 'dsh-copy-file-link' }),
 ]);
 const BASE = '@deepseek-ai/dsh-base';
+const AUTO_ARCHIVE = 'dsh-session-auto-archive';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BACKUP_DIRECTORY = '.dsh-plugin-remote-improve-backups';
 const HELP = `Usage: node scripts/install.mjs [--home <absolute DSH_HOME>] [--profile <name>]
@@ -134,7 +135,34 @@ function validateManifest(manifest, manifestPath) {
   }
 }
 
-function plan(options) {
+function validateSource(source, name) {
+  plainDirectory(source);
+  const manifestPath = path.join(source, 'package.json');
+  const manifest = readJSON(readPlainFile(manifestPath), manifestPath);
+  if (!object(manifest) || manifest.name !== name) fail(`Unexpected package name: ${manifestPath}`);
+}
+function externalArchiveSource(source, repoRoot, profilePath) {
+  if (typeof source !== 'string' || !path.isAbsolute(source) || /[\0\r\n]/.test(source)) {
+    fail('Auto-archive source must be an absolute directory path');
+  }
+  const normalized = path.resolve(source);
+  plainDirectory(normalized);
+  const canonical = realpathSync(normalized);
+  // Reject overlap in BOTH directions: the third-party source cannot be in
+  // this checkout/profile, nor contain profile data or the checkout itself.
+  for (const candidate of [normalized, canonical]) {
+    for (const root of [repoRoot, profilePath]) {
+      if (inside(root, candidate) || inside(candidate, root)) {
+        fail('Auto-archive source must not overlap the repository or profile directory');
+      }
+    }
+  }
+  validateSource(canonical, AUTO_ARCHIVE);
+  return canonical;
+}
+
+function plan(options, archiveSource) {
+  const external = archiveSource !== undefined;
   const { profile = 'web', remove = false, withPerf = false } = options;
   validateProfile(profile);
   for (const key of ['apply', 'remove', 'withPerf']) {
@@ -153,7 +181,9 @@ function plan(options) {
   const original = readPlainFile(manifestPath);
   const manifest = readJSON(original, manifestPath);
   validateManifest(manifest, manifestPath);
-  const activePackages = remove || withPerf ? PACKAGES : [PACKAGES[2]];
+  const activePackages = external
+    ? [{ name: AUTO_ARCHIVE, source: externalArchiveSource(archiveSource, repoRoot, profilePath) }]
+    : remove || withPerf ? PACKAGES : [PACKAGES[2]];
   const nodeModules = path.join(profilePath, 'node_modules');
   plainDirectory(nodeModules, { optional: true });
   if (activePackages.some(({ name }) => name.startsWith('@local/'))) {
@@ -164,31 +194,31 @@ function plan(options) {
   const names = new Set(activePackages.map(({ name }) => name));
   const nextBundles = bundles.filter((name) => !names.has(name));
   if (!remove) {
-    if (withPerf) {
+    if (!external && withPerf) {
       if (nextBundles.filter((name) => name === BASE).length !== 1) fail(`Perf install requires exactly one ${BASE} bundle: ${manifestPath}`);
       nextBundles.splice(nextBundles.indexOf(BASE), 0, PACKAGES[0].name, PACKAGES[1].name);
     }
-    nextBundles.push(PACKAGES[2].name);
+    nextBundles.push(external ? AUTO_ARCHIVE : PACKAGES[2].name);
   }
   const bundleOrderChanged = JSON.stringify(bundles) !== JSON.stringify(nextBundles);
-  const entries = activePackages.map(({ name, directory }) => {
-    const source = path.join(repoRoot, 'packages', directory);
-    if (!remove) {
+  const entries = activePackages.map(({ name, directory, source: suppliedSource }) => {
+    const source = suppliedSource ?? path.join(repoRoot, 'packages', directory);
+    if (!external && !remove) {
       plainDirectory(path.join(repoRoot, 'packages'));
-      plainDirectory(source);
-      const sourceManifestPath = path.join(source, 'package.json');
-      const sourceManifest = readJSON(readPlainFile(sourceManifestPath), sourceManifestPath);
-      if (!object(sourceManifest) || sourceManifest.name !== name) fail(`Unexpected package name: ${sourceManifestPath}`);
+      validateSource(source, name);
     }
     const link = path.join(nodeModules, ...name.split('/'));
     const previousLink = linkState(link);
-    const legacy = path.join(path.dirname(repoRoot), directory);
-    if (previousLink && previousLink.resolved !== source && (remove || previousLink.resolved !== legacy)) {
+    const legacy = !external ? path.join(path.dirname(repoRoot), directory) : null;
+    if (previousLink && previousLink.resolved !== source && (external || remove || previousLink.resolved !== legacy)) {
       fail(`Refusing ${remove ? 'to remove' : 'to retarget'} a foreign symlink: ${link}`);
     }
     const dependencyPresent = Object.hasOwn(dependencies, name);
-    if (remove && dependencyPresent && !ownedDependency(dependencies[name], source, profilePath)) {
-      fail(`Refusing to remove a dependency not owned by this checkout: ${name} in ${manifestPath}`);
+    if ((remove || external) && dependencyPresent && !ownedDependency(dependencies[name], source, profilePath)) {
+      fail(`Refusing ${remove ? 'to remove' : 'to replace'} a dependency not owned by this ${external ? 'source' : 'checkout'}: ${name} in ${manifestPath}`);
+    }
+    if (external && remove && bundles.includes(name) && !previousLink && !dependencyPresent) {
+      fail(`Refusing to remove a bundle without source ownership evidence: ${name} in ${manifestPath}`);
     }
     const dependencyChanged = remove ? dependencyPresent : dependencies[name] !== `link:${source}`;
     if (remove) delete dependencies[name];
@@ -301,9 +331,7 @@ function apply(p) {
   return backup;
 }
 
-/** Programmatic entry point; repoRoot supports isolated fixture checkouts. */
-export function install(options = {}, log = (line) => process.stdout.write(`${line}\n`)) {
-  const p = plan(options);
+function execute(p, options, log) {
   const backupPath = p.changed && options.apply === true ? apply(p) : null;
   const changedPackages = [];
   for (const entry of p.entries) {
@@ -316,6 +344,26 @@ export function install(options = {}, log = (line) => process.stdout.write(`${li
   }
   if (backupPath) log(`backup: ${JSON.stringify(backupPath)}`);
   return { changed: p.changed, changedPackages, profilePath: p.profilePath, manifestPath: p.manifestPath, backupPath };
+}
+
+/** Programmatic entry point; repoRoot supports isolated fixture checkouts. */
+export function install(options = {}, log = (line) => process.stdout.write(`${line}\n`)) {
+  return execute(plan(options), options, log);
+}
+
+/**
+ * Link one externally prepared, pinned third-party archive package.
+ * The setup layer verifies provenance/patches; this layer only changes this
+ * package's profile dependency, bundle entry, and symlink. It never writes
+ * archive storage configuration or copies profile/store data into source.
+ */
+export function installAutoArchive(options = {}, source, log = (line) => process.stdout.write(`${line}\n`)) {
+  if (!object(options)) fail('Auto-archive options must be an object');
+  if ('withPerf' in options) fail('withPerf is not supported by installAutoArchive');
+  if (typeof source !== 'string' || !path.isAbsolute(source) || /[\0\r\n]/.test(source)) {
+    fail('Auto-archive source must be an absolute directory path');
+  }
+  return execute(plan(options, source), options, log);
 }
 
 export function main(args = process.argv.slice(2)) {

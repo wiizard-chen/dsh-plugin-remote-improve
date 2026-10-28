@@ -9,11 +9,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { install, PACKAGES, parseArgs } from '../scripts/install.mjs';
+import { install, installAutoArchive, PACKAGES, parseArgs } from '../scripts/install.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/install.mjs', import.meta.url));
 const BASE = '@deepseek-ai/dsh-base';
 const COPY = PACKAGES[2].name;
+const ARCHIVE = 'dsh-session-auto-archive';
 const PRIVATE = 'synthetic-private-setting-not-for-stdout';
 const quiet = () => {};
 const originalManifest = () => ({
@@ -90,6 +91,22 @@ function cli(f, args, env = {}) {
 function assertRejectedUnchanged(f, options, pattern) {
   const before = snapshot(f.root);
   assert.throws(() => install({ ...f.options, ...options }, quiet), pattern);
+  assert.deepEqual(snapshot(f.root), before);
+}
+function archiveFixture(t, options) {
+  const f = fixture(t, options);
+  const archiveSource = path.join(f.home, 'third-party', 'packages', 'synthetic pinned archive');
+  json(path.join(archiveSource, 'package.json'), {
+    name: ARCHIVE, type: 'module', license: 'MIT', author: 'Synthetic upstream author',
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
+  });
+  put(path.join(archiveSource, 'cordis.patch.yml'), '[]\n');
+  put(path.join(archiveSource, 'LICENSE'), 'Synthetic license fixture; not upstream content.\n');
+  return { ...f, archiveSource, archiveLink: path.join(f.profilePath, 'node_modules', ARCHIVE) };
+}
+function assertArchiveRejectedUnchanged(f, options, source, pattern) {
+  const before = snapshot(f.root);
+  assert.throws(() => installAutoArchive({ ...f.options, ...options }, source, quiet), pattern);
   assert.deepEqual(snapshot(f.root), before);
 }
 function backups(f) {
@@ -483,6 +500,176 @@ test('missing dependencies object is supported and default copy needs no base bu
   install({ ...f.options, apply: true }, quiet);
   assert.deepEqual(readJSON(f.manifestPath).dsh.profile.bundles, ['synthetic-custom', COPY]);
   assert.equal(readJSON(f.manifestPath).dependencies[COPY], `link:${f.source(PACKAGES[2])}`);
+});
+
+test('archive defaults to no-write preview with a real external source sharing the DSH home', (t) => {
+  const manifest = originalManifest();
+  manifest.dsh.profile.bundles = ['synthetic-no-base-bundle'];
+  const f = archiveFixture(t, { manifest });
+  const before = snapshot(f.root);
+  const lines = [];
+  const result = installAutoArchive(f.options, f.archiveSource, (line) => lines.push(line));
+  assert.equal(result.changed, true);
+  assert.equal(result.backupPath, null);
+  assert.deepEqual(result.changedPackages, [ARCHIVE]);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^dry-run install dsh-session-auto-archive:/);
+  assert.ok(!lines[0].includes(PRIVATE));
+  assert.ok(!lines[0].includes('synthetic-no-base-bundle'));
+  assert.deepEqual(snapshot(f.root), before);
+});
+
+test('archive install reuses backups, preserves core plugins and private config, and is idempotent', (t) => {
+  const f = archiveFixture(t, { profile: 'archive-preview' });
+  install({ ...f.options, withPerf: true, apply: true }, quiet);
+  const before = readJSON(f.manifestPath);
+  const raw = readFileSync(f.manifestPath, 'utf8');
+  const originalPatch = readFileSync(path.join(f.profilePath, 'cordis.patch.yml'), 'utf8');
+  const sourceSnapshot = snapshot(f.archiveSource);
+  const coreLinks = PACKAGES.map((entry) => readlinkSync(f.link(entry)));
+  const lines = [];
+  const result = installAutoArchive({ ...f.options, apply: true }, f.archiveSource, (line) => lines.push(line));
+  const after = readJSON(f.manifestPath);
+  assert.deepEqual(after, {
+    ...before, dependencies: { ...before.dependencies, [ARCHIVE]: `link:${f.archiveSource}` },
+    dsh: { ...before.dsh, profile: { ...before.dsh.profile, bundles: [...before.dsh.profile.bundles, ARCHIVE] } },
+  });
+  assert.equal(readlinkSync(f.archiveLink), f.archiveSource);
+  assert.deepEqual(PACKAGES.map((entry) => readlinkSync(f.link(entry))), coreLinks);
+  assert.equal(readFileSync(path.join(f.profilePath, 'cordis.patch.yml'), 'utf8'), originalPatch);
+  assert.deepEqual(snapshot(f.archiveSource), sourceSnapshot);
+  assert.equal(readJSON(result.backupPath).manifest, raw);
+  assert.deepEqual(readJSON(result.backupPath).links, [{ name: ARCHIVE, path: f.archiveLink, target: null }]);
+  assert.ok(!lines.join('\n').includes(PRIVATE));
+  const installed = snapshot(f.root);
+  const secondLines = [];
+  const second = installAutoArchive({ ...f.options, apply: true }, f.archiveSource, (line) => secondLines.push(line));
+  assert.equal(second.changed, false);
+  assert.equal(second.backupPath, null);
+  assert.deepEqual(secondLines, []);
+  assert.deepEqual(snapshot(f.root), installed);
+});
+
+test('archive installation ignores unrelated non-symlink core packages and scoped directories', (t) => {
+  const f = archiveFixture(t);
+  mkdirSync(f.link(PACKAGES[2]), { recursive: true });
+  makeLink(path.join(f.profilePath, 'node_modules', '@local'), path.join(f.root, 'synthetic-unrelated-scope'));
+  const core = snapshot(f.link(PACKAGES[2]));
+  installAutoArchive({ ...f.options, apply: true }, f.archiveSource, quiet);
+  assert.deepEqual(snapshot(f.link(PACKAGES[2])), core);
+  assert.equal(readlinkSync(f.archiveLink), f.archiveSource);
+});
+
+test('archive remove is scoped to its source, previews, and leaves all core bundles untouched', (t) => {
+  const f = archiveFixture(t);
+  install({ ...f.options, withPerf: true, apply: true }, quiet);
+  const original = readJSON(f.manifestPath);
+  installAutoArchive({ ...f.options, apply: true }, f.archiveSource, quiet);
+  const before = snapshot(f.root);
+  installAutoArchive({ ...f.options, remove: true }, f.archiveSource, quiet);
+  assert.deepEqual(snapshot(f.root), before);
+  const result = installAutoArchive({ ...f.options, remove: true, apply: true }, f.archiveSource, quiet);
+  assert.deepEqual(result.changedPackages, [ARCHIVE]);
+  assert.deepEqual(readJSON(f.manifestPath), original);
+  assert.ok(!exists(f.archiveLink));
+  for (const entry of PACKAGES) assert.equal(readlinkSync(f.link(entry)), f.source(entry));
+  const removed = snapshot(f.root);
+  assert.equal(installAutoArchive({ ...f.options, remove: true, apply: true }, f.archiveSource, quiet).changed, false);
+  assert.deepEqual(snapshot(f.root), removed);
+});
+
+for (const kind of ['directory', 'file', 'foreign-link', 'legacy-link']) {
+  test(`archive rejects a ${kind} collision without changing any files`, (t) => {
+    const f = archiveFixture(t);
+    if (kind === 'directory') mkdirSync(f.archiveLink, { recursive: true });
+    else if (kind === 'file') put(f.archiveLink, 'synthetic existing package');
+    else makeLink(f.archiveLink, kind === 'legacy-link'
+      ? path.join(path.dirname(f.repoRoot), ARCHIVE)
+      : path.join(f.root, 'foreign-checkout', ARCHIVE));
+    const pattern = kind.endsWith('link') ? /foreign symlink/ : /non-symlink/;
+    for (const remove of [false, true]) {
+      assertArchiveRejectedUnchanged(f, { apply: true, remove }, f.archiveSource, pattern);
+    }
+  });
+}
+
+test('archive refuses foreign dependencies on both installation and removal', (t) => {
+  const f = archiveFixture(t);
+  const manifest = readJSON(f.manifestPath);
+  manifest.dependencies[ARCHIVE] = '^99.0.0';
+  manifest.dsh.profile.bundles.push(ARCHIVE);
+  json(f.manifestPath, manifest);
+  makeLink(f.archiveLink, f.archiveSource);
+  for (const remove of [false, true]) {
+    assertArchiveRejectedUnchanged(f, { apply: true, remove }, f.archiveSource, /dependency not owned/);
+  }
+});
+
+test('archive rejects unsupported withPerf even when explicitly false', (t) => {
+  const f = archiveFixture(t);
+  for (const withPerf of [true, false, undefined]) {
+    assertArchiveRejectedUnchanged(f, { withPerf, apply: true }, f.archiveSource, /withPerf is not supported/);
+  }
+});
+
+test('archive validates absolute existing source, fixed package identity, and real root/manifest', (t) => {
+  const f = archiveFixture(t);
+  for (const source of [undefined, null, '', 'relative/source', `${f.archiveSource}\0`, `${f.archiveSource}\n`]) {
+    assertArchiveRejectedUnchanged(f, { apply: true }, source, /absolute directory path/);
+  }
+  assertArchiveRejectedUnchanged(f, { apply: true }, path.join(f.root, 'missing-source'), /real directory/);
+  const alias = path.join(f.root, 'synthetic-source-alias');
+  makeLink(alias, f.archiveSource);
+  for (const source of [alias, `${alias}${path.sep}`]) {
+    assertArchiveRejectedUnchanged(f, { apply: true }, source, /real directory/);
+  }
+  const sourceManifest = path.join(f.archiveSource, 'package.json');
+  json(sourceManifest, { name: COPY });
+  assertArchiveRejectedUnchanged(f, { apply: true }, f.archiveSource, /Unexpected package name/);
+  json(sourceManifest, { name: ARCHIVE });
+  const externalManifest = path.join(f.root, 'synthetic-package.json');
+  copyFileSync(sourceManifest, externalManifest);
+  unlinkSync(sourceManifest);
+  makeLink(sourceManifest, externalManifest);
+  assertArchiveRejectedUnchanged(f, { apply: true }, f.archiveSource, /regular non-symlink file/);
+});
+
+test('archive source cannot contain or be contained by profile or repository', (t) => {
+  const f = archiveFixture(t);
+  const inRepo = path.join(f.repoRoot, 'synthetic-external');
+  const inProfile = path.join(f.profilePath, 'synthetic-external');
+  mkdirSync(inRepo);
+  mkdirSync(inProfile);
+  for (const source of [f.repoRoot, f.profilePath, inRepo, inProfile, f.home, f.root]) {
+    assertArchiveRejectedUnchanged(f, { apply: true }, source, /must not overlap/);
+  }
+  const alias = path.join(f.root, 'synthetic-parent-alias');
+  makeLink(alias, f.repoRoot);
+  assertArchiveRejectedUnchanged(f, { apply: true }, path.join(alias, 'synthetic-external'), /must not overlap/);
+});
+
+test('archive remove refuses an orphan bundle without any source ownership evidence', (t) => {
+  const manifest = originalManifest();
+  manifest.dsh.profile.bundles.push(ARCHIVE);
+  const f = archiveFixture(t, { manifest });
+  assertArchiveRejectedUnchanged(f, { apply: true, remove: true }, f.archiveSource, /ownership evidence/);
+});
+
+test('archive accepts equivalent relative owned links/dependencies and can clean a missing owned link', (t) => {
+  const f = archiveFixture(t);
+  installAutoArchive({ ...f.options, apply: true }, f.archiveSource, quiet);
+  unlinkSync(f.archiveLink);
+  makeLink(f.archiveLink, path.relative(path.dirname(f.archiveLink), f.archiveSource));
+  const manifest = readJSON(f.manifestPath);
+  manifest.dependencies[ARCHIVE] = `link:${path.relative(f.profilePath, f.archiveSource)}`;
+  json(f.manifestPath, manifest);
+  const result = installAutoArchive({ ...f.options, remove: true, apply: true }, f.archiveSource, quiet);
+  assert.equal(result.changed, true);
+  assert.ok(!exists(f.archiveLink));
+  installAutoArchive({ ...f.options, apply: true }, f.archiveSource, quiet);
+  unlinkSync(f.archiveLink);
+  installAutoArchive({ ...f.options, remove: true, apply: true }, f.archiveSource, quiet);
+  assert.ok(!Object.hasOwn(readJSON(f.manifestPath).dependencies, ARCHIVE));
 });
 
 test('CLI help and invalid options never access a real profile', (t) => {
